@@ -1,0 +1,12 @@
+[Unit]
+Description=usb gadget setup
+Requires=systemd-modules-load.service
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /usr/bin/keyd_gadget.sh
+
+[Install]
+WantedBy=sysinit.target

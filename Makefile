@@ -34,10 +34,14 @@ install:
 	mkdir -p $(DESTDIR)$(PREFIX)/share/man/man1
 
 	install -m644 keyd.service $(DESTDIR)$(PREFIX)/lib/systemd/system
+	install -m644 keyd_gadget.service $(DESTDIR)$(PREFIX)/lib/systemd/system
 	install -m755 bin/keyd $(DESTDIR)$(PREFIX)/bin
+	install -m755 keyd_gadget.sh $(DESTDIR)$(PREFIX)/bin
 	install -m644 keyd.1.gz $(DESTDIR)$(PREFIX)/share/man/man1
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/keyd.service\
+		$(DESTDIR)$(PREFIX)/lib/systemd/system/keyd_gadget.service\
 		bin/keyd $(DESTDIR)$(PREFIX)/bin/keyd\
+		$(DESTDIR)$(PREFIX)/bin/keyd_gadget.sh\
 		$(DESTDIR)$(PREFIX)/share/man/man1/keyd.1.gz
 

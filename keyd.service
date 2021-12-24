@@ -1,11 +1,11 @@
 [Unit]
 Description=key remapping daemon
 Requires=local-fs.target
-After=local-fs.target
+After=keyd_gadget.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/keyd 
+ExecStart=/usr/bin/keyd
 
 [Install]
 WantedBy=sysinit.target
