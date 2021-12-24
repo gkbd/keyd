@@ -22,10 +22,8 @@
 
 #ifdef __FreeBSD__
 #include <dev/evdev/input.h>
-#include <dev/evdev/uinput.h>
 #else
 #include <linux/input.h>
-#include <linux/uinput.h>
 #endif
 
 #include <stdio.h>
@@ -50,18 +48,19 @@
 #include "keys.h"
 #include "config.h"
 
-#define VIRTUAL_KEYBOARD_NAME "keyd virtual keyboard"
-#define VIRTUAL_POINTER_NAME "keyd virtual pointer"
-#define IS_MOUSE_BTN(code) (((code) >= BTN_LEFT && (code) <= BTN_TASK) ||\
-			    ((code) >= BTN_0 && (code) <= BTN_9))
 #define MAX_KEYBOARDS 256
 
 #define dbg(fmt, ...) { if(debug) info("%s:%d: "fmt, __FILE__, __LINE__, ## __VA_ARGS__); }
 #define dbg2(fmt, ...) { if(debug > 1) info("%s:%d: "fmt, __FILE__, __LINE__, ## __VA_ARGS__); }
 
+struct hid_report {
+uint16_t mods;
+uint16_t code;
+uint32_t fill;
+};
+
 static int debug = 0;
 static int vkbd = -1;
-static int vptr = -1;
 
 static struct udev *udev;
 static struct udev_monitor *udevmon;
@@ -123,8 +122,6 @@ static void udev_type(struct udev_device *dev, int *iskbd, int *ismouse)
 {
 	if (iskbd)
 		*iskbd = 0;
-	if (ismouse)
-		*ismouse = 0;
 
 	const char *path = udev_device_get_devnode(dev);
 
@@ -142,12 +139,6 @@ static void udev_type(struct udev_device *dev, int *iskbd, int *ismouse)
 				*iskbd = 1;
 		}
 
-		if (!strcmp
-		    (udev_list_entry_get_name(prop), "ID_INPUT_MOUSE")
-		    && !strcmp(udev_list_entry_get_value(prop), "1")) {
-			if (ismouse)
-				*ismouse = 1;
-		}
 	}
 }
 
@@ -218,141 +209,54 @@ static void get_keyboard_nodes(char *nodes[MAX_KEYBOARDS], int *sz)
 	udev_unref(udev);
 }
 
-static int create_virtual_pointer()
-{
-	uint16_t code;
-	struct uinput_setup usetup;
-
-	int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
-	if (fd < 0) {
-		perror("open");
-		exit(-1);
-	}
-
-	ioctl(fd, UI_SET_EVBIT, EV_REL);
-	ioctl(fd, UI_SET_EVBIT, EV_KEY);
-	ioctl(fd, UI_SET_EVBIT, EV_SYN);
-
-	ioctl(fd, UI_SET_RELBIT, REL_X);
-	ioctl(fd, UI_SET_RELBIT, REL_WHEEL);
-	ioctl(fd, UI_SET_RELBIT, REL_HWHEEL);
-	ioctl(fd, UI_SET_RELBIT, REL_Y);
-	ioctl(fd, UI_SET_RELBIT, REL_Z);
-
-	for (code = BTN_LEFT; code <= BTN_TASK; code++)
-		ioctl(fd, UI_SET_KEYBIT, code);
-
-	for (code = BTN_0; code <= BTN_9; code++)
-		ioctl(fd, UI_SET_KEYBIT, code);
-
-	memset(&usetup, 0, sizeof(usetup));
-	usetup.id.bustype = BUS_USB;
-	usetup.id.product = 0x1FAC;
-	usetup.id.vendor = 0x0ADE;
-	strcpy(usetup.name, VIRTUAL_POINTER_NAME);
-
-	ioctl(fd, UI_DEV_SETUP, &usetup);
-	ioctl(fd, UI_DEV_CREATE);
-
-	return fd;
-}
-
 static int create_virtual_keyboard()
 {
-	size_t i;
-	struct uinput_setup usetup;
 
-	int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+	int fd = open("/dev/hidg0", O_WRONLY | O_NONBLOCK);
 	if (fd < 0) {
 		perror("open");
 		exit(-1);
 	}
 
-	ioctl(fd, UI_SET_EVBIT, EV_KEY);
-	ioctl(fd, UI_SET_EVBIT, EV_SYN);
-
-	for (i = 0; i < KEY_MAX; i++) {
-		if (keycode_table[i].name && !IS_MOUSE_BTN(i))
-			ioctl(fd, UI_SET_KEYBIT, i);
-	}
-
-	memset(&usetup, 0, sizeof(usetup));
-	usetup.id.bustype = BUS_USB;
-	usetup.id.product = 0x0FAC;
-	usetup.id.vendor = 0x0ADE;
-	strcpy(usetup.name, VIRTUAL_KEYBOARD_NAME);
-
-	ioctl(fd, UI_DEV_SETUP, &usetup);
-	ioctl(fd, UI_DEV_CREATE);
-
 	return fd;
 }
 
-static void syn(int fd)
+uint16_t hid_code(uint16_t code)
 {
-	static struct input_event ev = {
-		.type = EV_SYN,
-		.code = 0,
-		.value = 0,
-	};
-
-	write(fd, &ev, sizeof(ev));
+	int codes = sizeof(evdev_to_hid)/sizeof(evdev_to_hid[0]);
+	for(int i = 0; i < codes/2; i++) {
+		if(code == evdev_to_hid[2*i]) {
+			return evdev_to_hid[2*i+1];
+		}
+	}
+	return 0;
 }
 
-static void send_repetitions()
-{
-	size_t i;
-	struct input_event ev = {
-		.type = EV_KEY,
-		.value = 2,
-		.time.tv_sec = 0,
-		.time.tv_usec = 0
-	};
+void send_hid_report (uint16_t code, uint16_t mods) {
 
-	//Inefficient, but still reasonably fast (<100us)
-	for (i = 0; i < sizeof keystate / sizeof keystate[0]; i++) {
-		if (keystate[i]) {
-			ev.code = i;
-			write(vkbd, &ev, sizeof(ev));
-			syn(vkbd);
-		}
+	struct hid_report report;
+
+	report.code = hid_code(code);
+	report.mods = mods;
+	report.fill = 0;
+
+	if (write(vkbd,&report,sizeof(report)) < 0) {
+		dbg("Can not send HID report: (%d, %d)", mods, hid_code(code));
 	}
 }
 
-static void send_key(uint16_t code, int is_pressed)
+static void send_key(uint16_t code, uint16_t mods)
 {
 	if (code == KEY_NOOP)
 		return;
 
-	keystate[code] = is_pressed;
-	struct input_event ev;
+	send_hid_report(code, mods);
+	usleep(2000);
+	send_hid_report(0x0, 0x0);
 
-	ev.type = EV_KEY;
-	ev.code = code;
-	ev.value = is_pressed;
-	ev.time.tv_sec = 0;
-	ev.time.tv_usec = 0;
-
-	write(vkbd, &ev, sizeof(ev));
-
-	syn(vkbd);
 }
 
-static void setmods(uint16_t mods)
-{
-	if (!!(mods & MOD_CTRL) != keystate[KEY_LEFTCTRL])
-		send_key(KEY_LEFTCTRL, !keystate[KEY_LEFTCTRL]);
-	if (!!(mods & MOD_SHIFT) != keystate[KEY_LEFTSHIFT])
-		send_key(KEY_LEFTSHIFT, !keystate[KEY_LEFTSHIFT]);
-	if (!!(mods & MOD_SUPER) != keystate[KEY_LEFTMETA])
-		send_key(KEY_LEFTMETA, !keystate[KEY_LEFTMETA]);
-	if (!!(mods & MOD_ALT) != keystate[KEY_LEFTALT])
-		send_key(KEY_LEFTALT, !keystate[KEY_LEFTALT]);
-	if (!!(mods & MOD_ALT_GR) != keystate[KEY_RIGHTALT])
-		send_key(KEY_RIGHTALT, !keystate[KEY_RIGHTALT]);
-}
-
-static void reify_layer_mods(struct keyboard *kbd)
+static uint16_t reify_layer_mods(struct keyboard *kbd)
 {
 	uint16_t mods = 0;
 	size_t i;
@@ -364,7 +268,7 @@ static void reify_layer_mods(struct keyboard *kbd)
 			mods |= layer->mods;
 	}
 
-	setmods(mods);
+	return mods;
 }
 
 static void kbd_panic_check(struct keyboard *kbd)
@@ -460,9 +364,7 @@ static void do_keyseq(uint32_t seq)
 	if (mods & MOD_TIMEOUT) {
 		usleep(GET_TIMEOUT(seq) * 1000);
 	} else {
-		setmods(mods);
-		send_key(key, 1);
-		send_key(key, 0);
+		send_key(key, mods);
 	}
 }
 
@@ -510,16 +412,14 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 				uint16_t key = keyseq & 0xFFFF;
 				mods |= keyseq >> 16;
 
-				setmods(mods);
-				send_key(key, 1);
-				send_key(key, 0);
+				send_key(key, mods);
 
 				last_keyseq_timestamp = get_time();
 				goto keyseq_cleanup;
 			}
 		}
 
-		reify_layer_mods(kbd);
+		mods = reify_layer_mods(kbd);
 		break;
 	case ACTION_LAYOUT:
 		kbd->layout = kbd->layers[d->arg.layer];
@@ -541,7 +441,7 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 		} else		//Tapped
 			oneshot_layers[d->arg.layer] = 1;
 
-		reify_layer_mods(kbd);
+		mods = reify_layer_mods(kbd);
 		break;
 	case ACTION_LAYER_TOGGLE:
 		if (!pressed) {
@@ -552,7 +452,7 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 			} else {
 				layer->active = !layer->active;
 			}
-			reify_layer_mods(kbd);
+			mods = reify_layer_mods(kbd);
 			goto keyseq_cleanup;
 		}
 		break;
@@ -566,23 +466,15 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 			layer->active = 0;
 		}
 
-		reify_layer_mods(kbd);
+		mods = reify_layer_mods(kbd);
 		break;
 	case ACTION_KEYSEQ:
 		mods |= d->arg.keyseq >> 16;
 		keycode = d->arg.keyseq & 0xFFFF;
 		if (pressed) {
-			setmods(mods);
-
-			//Account for the possibility that a version of the key
-			//with a different modifier set is already depressed (e.g [/{)
-			if (keystate[keycode])
-				send_key(keycode, 0);
-
-			send_key(keycode, 1);
+			send_key(keycode, mods);
 		} else {
-			reify_layer_mods(kbd);
-			send_key(keycode, 0);
+			mods = reify_layer_mods(kbd);
 		}
 
 		goto keyseq_cleanup;
@@ -595,7 +487,7 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 			for (i = 0; i < sz; i++)
 				do_keyseq(macro[i]);
 
-			reify_layer_mods(kbd);
+			mods = reify_layer_mods(kbd);
 			goto keyseq_cleanup;
 
 		}
@@ -655,7 +547,7 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 				swapped_keycode = code;
 
 				do_keyseq(d->arg2.keyseq);
-				reify_layer_mods(kbd);
+				mods = reify_layer_mods(kbd);
 			}
 		}
 		//Key up corresponding to the swapped key.
@@ -664,7 +556,7 @@ static void process_key_event(struct keyboard *kbd, uint16_t code,
 
 			swapped_keycode = 0;
 
-			reify_layer_mods(kbd);
+			mods = reify_layer_mods(kbd);
 		}
 
 		break;
@@ -765,7 +657,7 @@ static int manage_keyboard(const char *devnode)
 	struct keyboard_config *cfg = NULL;
 	struct keyboard_config *default_cfg = NULL;
 
-	if (!strcmp(name, VIRTUAL_KEYBOARD_NAME) || !strcmp(name, VIRTUAL_POINTER_NAME))	//Don't manage virtual devices.
+	if (!strcmp(name, "USB Gadget Keyboard"))	// Possible device to host loop
 		return 0;
 
 	for (kbd = keyboards; kbd; kbd = kbd->next) {
@@ -1073,29 +965,12 @@ static void main_loop()
 						//Preprocess events.
 						switch (ev.type) {
 						case EV_KEY:
-							if (IS_MOUSE_BTN
-							    (ev.code)) {
-								write(vptr, &ev, sizeof(ev));	//Pass mouse buttons through the virtual pointer unimpeded.
-								syn(vptr);
-							} else if (ev.
-								   value ==
-								   2) {
-								//Wayland and X both ignore repeat events but VTs seem to require them.
-								send_repetitions
-								    ();
-							} else {
 								process_key_event
 								    (kbd,
 								     ev.
 								     code,
 								     ev.
 								     value);
-							}
-							break;
-						case EV_REL:	//Pointer motion events
-							write(vptr, &ev,
-							      sizeof(ev));
-							syn(vptr);
 							break;
 						case EV_SYN:
 							break;
@@ -1230,7 +1105,7 @@ int main(int argc, char *argv[])
 	info("Starting keyd v%s (%s).", VERSION, GIT_COMMIT_HASH);
 	config_generate();
 	vkbd = create_virtual_keyboard();
-	vptr = create_virtual_pointer();
 
 	main_loop();
 }
+

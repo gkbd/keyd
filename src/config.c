@@ -181,6 +181,10 @@ static void keyseq_to_desc(uint32_t seq, struct key_descriptor *desc)
 		desc->action = ACTION_LAYER;
 		desc->arg.layer = lookup_layer("C");
 		break;
+	case KEY_RIGHTCTRL:
+		desc->action = ACTION_LAYER;
+		desc->arg.layer = lookup_layer("C");
+		break;
 	case KEY_LEFTALT:
 		desc->action = ACTION_LAYER;
 		desc->arg.layer = lookup_layer("A");
@@ -193,7 +197,15 @@ static void keyseq_to_desc(uint32_t seq, struct key_descriptor *desc)
 		desc->action = ACTION_LAYER;
 		desc->arg.layer = lookup_layer("S");
 		break;
+	case KEY_RIGHTSHIFT:
+		desc->action = ACTION_LAYER;
+		desc->arg.layer = lookup_layer("S");
+		break;
 	case KEY_LEFTMETA:
+		desc->action = ACTION_LAYER;
+		desc->arg.layer = lookup_layer("M");
+		break;
+	case KEY_RIGHTMETA:
 		desc->action = ACTION_LAYER;
 		desc->arg.layer = lookup_layer("M");
 		break;
